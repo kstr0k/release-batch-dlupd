@@ -1,0 +1,387 @@
+#!/bin/sh
+#shellcheck shell=dash
+#shellcheck disable=SC1007  # var=
+#shellcheck disable=SC2016  # '$var' not expanded
+#shellcheck disable=SC2034  # unused
+#shellcheck disable=SC2317  # unreachable
+
+set -ue
+exec 5<&0 6>&1 7>&2  # original std{in,out,err}
+_X_fd_stdin=5 _X_fd_stdout=6 _X_fd_stderr=7
+_X_argv0=$0
+_X_NL='
+'
+
+f_setup_globals() {
+  f_setup_argv0
+  f_setup_xtracefd
+  _O_list=false _O_create= _O_update=true
+  _O_root=$_X_me
+  _O_root=${_O_root%/*}; : "${_O_root:=/}"
+  : "${_O_ghcli:=$(command -v gh 2>/dev/null)}"
+
+  _X_usage_header="Usage: $_X_myname [OPTION]...
+
+Options:"
+  #shellcheck disable=SC2016
+  _X_usage_footer='
+*Details*
+Shorthand (bools): --OPT is --OPT=true, --no-OPT is --OPT=false
+
+  --help, -h    this help ("-?": show defaults)
+  --root=ROOT   all configs (per-package & global) + downloads
+  --create=URL  URL / "true"; creates ROOT first if inexistent.
+  --update=PKG  true (all) / false / PKG subdir path (abs. / relative to ROOT)
+
+ROOT default: my dirname (if I was invoked through a symlink: target'\''s dirname)
+
+URL (--create):
+  https://github.com/OWNER/NAME/releases/latest   latest release
+  https://github.com/OWNER/NAME/releases/tag/TAG  specific release
+  true                                            this package
+
+--create[=true] configures a package subdir for my latest release, updates &
+symlinks ROOT/op to my latest version (i.e. ROOT/op implies --root=ROOT).
+
+*Package subdirs*
+Register packages by creating ROOT/p/PKG subdirs, where PKG is the download URL
+(no https). --create=https://... does so automatically (see patterns above;
+view the results of --create[=true]).  Within a subdir:
+
+  %cfg%/    configure downloads (presence identifies a package subdir)
+  %dl%/     downloaded assets
+  %state%/  current package version etc. Wipe it (`rm -rf`) to reset.
+
+Config files (%cfg%/*):
+  asset/glob.txt  one pattern / line.
+  bin/preupd      runs once per package when updates found
+  bin/postupd     runs when downloads complete
+
+Default scripts (--create):
+  preupd   `rm -rf %dl%/*` (--update skips existing!)
+  postupd  `chmod a+x %dl%/*` (too broad but simple)
+'
+}
+
+gh_not_found() { error_exit 1 'gh tool required (https://github.com/cli/cli); if not in $PATH use --ghcli=...'; }
+
+f_setup_xtracefd() {
+  # set XTRACE{FD|FILE} to enable shell xtrace
+  if [ -n "${XTRACEFILE:-}" ]; then
+    exec 2>"$XTRACEFILE"; XTRACEFD=2
+  fi
+  if [ -n "${XTRACEFD:-}" ]; then
+    set -x
+    [ 2 != "$XTRACEFD" ] && exec 2>&"$XTRACEFD"
+  fi
+}
+
+f_setup_argv0() {
+  _X_me=$_X_argv0
+  _X_myname=${_X_me##*/}
+
+  _X_myurl=https://github.com/kstr0k/release-batch-dlupd/releases/latest
+  _X_myurlname=${_X_myurl%/*/*}; _X_myurlname=${_X_myurlname##*/}
+}
+
+__main() {
+  if [ 0 != "$#" ]; then __usage >&7 '-h' "$_X_usage_header" "$_X_usage_footer"; exit 1; fi
+
+  : "${_O_ghcli:=gh_not_found}"
+  if [ false != "$_O_list" ]; then
+    echo_dl_paths
+  elif [ -n "$_O_create" ]; then
+    create
+  elif [ -n "$_O_update" ]; then
+    update
+  fi
+}
+
+f_cd_root() {
+  if ! _O_root=$(readlink -f "$_O_root") || ! [ -e "$_O_root"/p ]; then
+    __usage >&7 '-?' "$_X_usage_header" "$_X_usage_footer
+ERROR: download root $_O_root/ missing or not set up. Use --create first.
+"
+    exit 1
+  fi
+  cd "$_O_root"/p
+}
+
+create() {
+  mkdir -p "$_O_root"/p; f_cd_root
+  if [ true = "$_O_create" ]; then
+    _O_create=$_X_myurl
+  fi
+  case "$_O_create" in
+    # don't match:
+    ('https://github.com/'*/*/*'/releases/'*)     ;;
+    ('https://github.com/'*/*'/releases/tag/'*/*) ;;
+    # try to match:
+    ('https://github.com/'*/*'/releases/latest'|'https://github.com/'*/*'/releases/tag/'*)
+      create_github_release_dl
+      return 0
+      ;;
+  esac
+  f_printnl "Release URL not supported: $_O_create"; return 1
+}
+create_github_release_dl() (
+  local path; path=${_O_create#'https://'}
+  ! [ -e "$path" ] || error_exit 1 "already exists: $_O_root/p/$path"
+  mkdir -p "$path"; cd "$path"
+  mkdir -p %dl% %cfg%/bin %cfg%/asset
+  printf %s\\n >%cfg%/bin/postupd \
+    '#!/bin/sh' 'set -ue' 'chmod a+x %dl%/*'
+  printf %s\\n >%cfg%/bin/preupd \
+    '#!/bin/sh' 'set -ue' 'rm -rf %dl%/*'
+  chmod a+x %cfg%/bin/*
+  if [ "$_O_create" = "$_X_myurl" ]; then
+    create_self_customize "$path"
+  else
+    printf >%cfg%/asset/glob.txt %s\\n \
+      '# one pattern / line; comments: "#" in column 1' '*'
+    f_printnl "$_O_root/$path created; you should at least configure its %cfg%/asset/glob.txt"
+  fi
+)
+create_self_customize() {  # args: path
+  printf %s\\n "$_X_myurlname" "$_X_myurlname.1" >%cfg%/asset/glob.txt
+  if [ true = "$_O_update" ]; then
+    _O_update=$1; (update)
+    set -- %dl%/"$_X_myurlname" "$_O_root"/op
+    if [ -e "$1" ]; then
+      rm -f "$2"
+      printf >"$2" %s\\n '#!/bin/sh' ". \"$(realpath "$1")\""
+      chmod a+x "$2"
+    fi
+  fi
+}
+
+echo_dl_paths() {
+  f_cd_root
+  case "$_O_update" in
+    (false) ;;
+    (true)
+      find . -name %dl% -type d | sed -e 's!^\./!!; s!/%dl%$!/!'
+      ;;
+    (*)
+      local path; path=$_O_update
+      path=$(readlink -f "$path")  # must resolve whether abs or rel to $PWD == ROOT/p
+      path=${path#"$_O_root"/p/}/
+      printf %s\\n "$path"
+      ;;
+  esac
+}
+
+filter_active_dl_path() {
+  ! [ -e "$1" ] || ! [ -e "$1"/%cfg%/ ] || printf %s\\n "$1"
+}
+
+f_try_path1() {  # in: $path # out: $path $path_match
+  local path_prev
+  case "$path" in
+    ($1*)
+      path_prev=$path
+      #shellcheck disable=SC2295
+      path=${path_prev#$1*}; path_match=${path_prev%"$path"}
+      cd "$path_match"
+      return 0
+      ;;
+    (*) return 1 ;;
+  esac
+}
+try_path() {  # args: [PREFIX_GLOB DISPATCH_FUN].. # in: $path # out: + f_try_path1()
+  local path_match
+  while [ 0 != "$#" ]; do
+    case "$path" in
+      ($1*)
+        f_try_path1 "$1"; "$2"; return $?
+        ;;
+      (*) shift 2 ;;
+    esac
+  done
+  return 1
+}
+
+update() {
+  f_cd_root
+  echo_dl_paths | foreach_line filter_active_dl_path | foreach_line update_p_
+}
+
+# update_p_*(): match partial path
+
+update_p_() {
+  local path; path=$1
+  local retcode; f_get_retcode try_path github.com/ update_p_github
+  if [ 0 != "$retcode" ]; then
+    f_printnl "update: failed for $path"
+  fi
+}
+
+update_p_github() {
+  f_try_path1 '*/'
+  local owner; owner=${path_match%/}
+  f_try_path1 '*/'
+  local project; project=${path_match%/}
+  local repo; repo="$owner/$project"
+  try_path releases/ update_p_github_release
+}
+update_p_github_release() {
+  try_path \
+    latest/ update_p_github_release_latest \
+    tag/ update_p_github_release_tag
+}
+
+update_p_github_release_tag() {
+  f_try_path1 '*/'
+  update_gh_release "releases/tags/${path_match%/}"
+}
+update_p_github_release_latest() {
+  update_gh_release releases/latest
+}
+
+update_gh_release() {
+  f_printnl "Updating $PWD"
+  local qassets='([ .assets[] | ((.size | tostring) + "=" + .name + "/" + .created_at + "|" + .updated_at) ] | sort | join(" "))'
+  local json; json=$("$_O_ghcli" api "repos/$repo/$1" --jq '"t=" + .tag_name, '"$qassets")
+  local tag r_tag asset_hash r_asset_hash
+  case "$json" in (t=*"$_X_NL"*) ;; (*) f_printnl 'Cannot parse reply'; return 1 ;; esac
+  json=${json#t=}
+  r_tag=${json%%"$_X_NL"*}; json=${json#"$r_tag$_X_NL"}
+  r_asset_hash=$(set +x; printf %s\\n "${json%%"$_X_NL"*}" | sha256sum -)
+  f_load_state %state% tag '' asset_hash ''
+  [ "$r_tag" != "$tag" ] || [ "$r_asset_hash" != "$asset_hash" ] || return 0
+  f_save_state %state% tag "$r_tag" asset_hash "$r_asset_hash"
+  local postupd preupd; f_set_scripts
+  if [ -r %cfg%/asset/glob.txt ]; then
+    f_call_script "$preupd"; preupd=:
+    f_postfix_assets_globs <%cfg%/asset/glob.txt -p \
+      "$_O_ghcli" release download "$r_tag" -D %dl% --skip-existing -R "$repo"
+    f_call_script "$postupd"
+  fi
+}
+f_postfix_assets_globs() {
+  local pflag; pflag=$1; shift
+  local p
+  while IFS= read -r p; do
+    [ "$p" = "${p#'#'}" ] || continue  # strip comments: '#' in column 1
+    set -- "$@" "$pflag" "$p"
+  done
+  "$@"
+}
+
+# utils
+
+f_load_state() {  # args: STATE_DIR [VARNAME DEFAULT]...
+  local __sdir; __sdir=$1; shift  # WARN: VARNAME cannot be __sdir
+  mkdir -p "$__sdir"
+  while [ 0 != "$#" ]; do
+    set -- "$__sdir/$1" "$@"  # save filename into tmp param
+    eval "$2=\$3"
+    if [ -r "$1" ]; then
+      IFS= read -r "$2" <"$1" || :  # TODO: multiline via while read ...
+    fi
+    shift 3
+  done
+}
+f_save_state() {  # args: STATE_DIR [VARNAME VALUE]...
+  local __sdir; __sdir=$1; shift  # WARN: VARNAME cannot be __sdir
+  mkdir -p "$__sdir"
+  while [ 0 != "$#" ]; do
+    printf '%s\n' "$2" >"$__sdir/$1"
+    shift 2
+  done
+}
+
+f_call_script() {
+  _O_root=$_O_root \
+    "$@" <&5 >&6 2>&7
+}
+f_set_scripts() {  # sets $preupd, $postupd
+  set -- %cfg%/bin/postupd %cfg%/bin/preupd
+  while [ 0 != "$#" ]; do
+    # result: ignore if missing
+    if ! [ -x "$1" ]; then set -- : "$@"; else set -- "$1" "$@"; fi
+    set -- "${2##*/}" "$@"  # varname from original scriptname
+    eval "$1='$2'"
+    shift 3
+ done
+}
+
+# sysutils
+
+noret() {
+  "$@"; exit 0
+}
+
+f_with_set() (
+  set "$1"; shift; "$@"
+)
+
+# 'if cmd ...', 'cmd &&', 'cmd ||' all disable errexit functionality within their scope (regardless of 'set -e')
+f_get_retcode() {  # args: cmd...  # sets: $retcode
+  set +e
+  f_with_set -e "$@"
+  retcode=$?
+  set -e
+}
+
+foreach_line() {
+  local line
+  while IFS= read -r line; do "$@" "$line"; done
+}
+
+f_print() {
+  printf >&7 %s "$*"
+}
+f_printnl() {
+  [ 0 = "$#" ] || printf >&7 %s\\n "$@"
+}
+error_exit() {
+  local sts; sts=$1; shift
+  f_printnl "ERROR: $*"
+  exit "$sts"
+}
+
+# min-template hooks
+
+__process_arg() {  # if $1 handled return 0; exit to stop processing
+  case "$1" in
+    (-h|--help) ;;
+    (*) return 1 ;;
+  esac
+  set -- "$1" "$_X_usage_header" "$_X_usage_footer"
+  __usage >&6 "$@"; exit 0
+}
+
+# adapted stripped sh min-template.sh (https://gitlab.com/kstr0k/bashaaparse)
+#shellcheck disable=SC3028,SC3043
+__usage() {  # args: <help-option> header footer
+  local vs=false; [ "$1" != '-?' ] || vs=true; shift
+  local flags p='/^_O_/!d;/[^[:alnum:]_]/d;h;s/_/-/g;s/^-O-/--/;s/$/=ARG/p'
+  ! "$vs" || p=${p%';s'*}';G;s/\n/[='\''$/;s/$/'\'']/p'
+  flags=$(set | sed -n -e '/=/!d;s/=.*//' -e "$p")
+  printf '%s'${1:+'\n'}  "${1:-}"
+  ! "$vs" || eval flags="\"$flags\""; printf '%s\n' "$flags" | sed -e 's!^!  !'
+  printf '%s'${2:+'\n'}  "${2:-}"
+}
+__parse_args() {
+  local k; test $# -gt 0 || set -- --
+  if ! __process_arg "$@"; then case "$1" in
+      (-v) set -x ;;
+      (-h|--help|--usage|-'?') __usage "$1" 'Options:'; exit 0 ;;
+      (--*=*) k=${1%%=*}; k=_O_${k#--}
+        case "$k" in (*[![:alnum:]_-]*) unset Bad; : "${Bad?arg "$k"}";; esac
+        k=$k-; while :; do case "$k" in
+          (*-) k=${k%%-*}_${k#*-} ;;
+           (*) eval "${k%_}=\${1#--*=}"; break ;;
+        esac; done ;;
+      (--exit) return 0 ;;
+      (--no-?*) k=$1; shift; __parse_args "--${k#--no-}=false" "$@"; return ;;
+      (--?*)    k=$1; shift; __parse_args "$k=true"            "$@"; return ;;
+      (--) shift; __main "$@"; return $? ;;
+      (*)         __main "$@"; return $? ;;
+  esac; fi
+  shift; __parse_args "$@"
+}
+
+f_setup_globals
+__parse_args "$@"

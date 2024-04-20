@@ -1,0 +1,1 @@
+../std_mk/shell-is-bash-one.mk

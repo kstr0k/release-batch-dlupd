@@ -1,0 +1,25 @@
+#!/bin/sh
+set -ue
+
+cd -- "$(git rev-parse --show-toplevel)"
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+  printf %s\\n 'Commit changes first.'; exit 1
+fi
+
+: "${PKG:="${PWD##*/}"}"
+changes=$(perl <doc/CHANGES.md -I mk -we '
+use v5.28; use open qw(:std :encoding(UTF-8)); use _P_TxtTools;
+my @parts = split_section( slurp_fh(), qr{^## }m, qr{^## }m );
+3 <= @parts or die; print @parts[1..2];
+')
+#changes=$(awk '/^##/{ n++ } n==2 { exit } n>0 { print }' <doc/CHANGES.md)
+printf %s\\n%s\\n 'Release changelog:' "$changes"
+tag=v$VERSION
+branch=$(git rev-parse --abbrev-ref --symbolic-full-name @)
+[ HEAD != "$branch" ]
+
+git tag "$tag"
+git push --atomic origin refs/heads/"$branch" refs/tags/"$tag"
+if [ "$#" != 0 ]; then
+  gh release create "$tag" "$@" --title "$PKG: $tag" --verify-tag -n "$changes"
+fi

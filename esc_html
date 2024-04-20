@@ -1,0 +1,8 @@
+#!/bin/sed -f
+# escape text meant as HTML fragment (not HTML attribute value)
+
+# ampersands first
+s!&!\&amp;!g
+s!<!\&lt;!g
+s!>!\&gt;!g
+# ^ just for symmetry ('>' needs no escaping)

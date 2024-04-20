@@ -1,0 +1,53 @@
+#!/usr/bin/env perl
+use warnings; use v5.28.0; use Carp; use autodie;
+use open qw(:std :encoding(UTF-8));
+use Encode qw(encode decode);
+
+use FindBin; use lib "$FindBin::Bin";
+use _P_TxtTools;
+
+@ARGV = map { decode(q(UTF-8), $_) } @ARGV;
+
+sub bad_usage { croak( 'Bad args' ); }
+
+my %_O_ = (
+  fixed_strings => 0,
+  endrx_optional => 0,
+);
+while (1) {
+  $_ = $ARGV[0]; defined $_ or bad_usage;
+  s{^--}{} or last; s{-}{_}g;
+  my $yes = s{^no_}{} ? 0 : 1;
+  defined $_O_{$_} or bad_usage;
+  $_O_{ $_ } = $yes; shift @ARGV;
+}
+1 <= @ARGV and 4 >= @ARGV or bad_usage;
+my ($fname, $replaced_part, $beg_rx, $end_rx) = @ARGV;
+
+if ($_O_{ fixed_strings }) {
+  ($beg_rx, $end_rx) = map { quotemeta } ( $beg_rx, $end_rx );
+}
+# ^ $replaced_part counts from 0 but parts include beg_rx, end_rx
+my $replacement = slurp_fh( \*STDIN );
+
+sub bad_input {
+  croak( "$0: cannot parse input $fname ($_[0])" );
+}
+
+my $in = slurp_fname( $fname );
+my @parts;
+if (not defined $replaced_part) {
+  @parts = ($in);
+  $replaced_part = 0;
+} else {
+  @parts = split_section( $in, $beg_rx, $end_rx );
+  bad_input( '1st delimiter' ) if 3 > @parts;
+  bad_input( '2nd delimiter' )
+    if defined $end_rx and 5 != @parts and not $_O_{ endrx_optional };
+}
+$replaced_part < @parts or bad_input 'replaced_part';
+
+if (splice1_chk( \@parts, $replaced_part, $replacement )) {
+  file_new_or_die( $fname, '>' )->print( join '', @parts );
+  STDERR->say( "Updated $fname part $replaced_part" );
+}

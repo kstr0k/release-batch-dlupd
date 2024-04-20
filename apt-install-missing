@@ -1,0 +1,9 @@
+#!/bin/sh
+set -ue
+
+pkgs=
+while [ 0 != "$#" ]; do
+  command -v "$1" >/dev/null || pkgs="$pkgs ${2:-"$1"}"
+  shift 2
+done
+${pkgs:+sudo apt install -y $pkgs}

@@ -7,8 +7,8 @@ Download & update packages, e.g. from GitHub releases. Features:
 ## Usage
 
 See `release-batch-dlupd --help`:
-<pre><samp><a id="app_help"></a>
-<a id="app_help_end"></a></samp></pre>
+<div><a id="app_help"></a>
+<a id="app_help_end"></a></div>
 
 ## Copyright
 

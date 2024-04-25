@@ -6,21 +6,25 @@ use open qw(:std :encoding(UTF-8));
 use FindBin; use lib "$FindBin::Bin";
 use _P_TxtTools;
 
-$_ = slurp_fh;
-html_tag_strip( qr{strong|em} );
-html_tag_unnest( q(dd), q(p) );
 $_ = slurp_fh( \*STDIN );
 
 my $beg_rx     = qr{(?<= [\s>'"(=])}mx;  # WARN: ['"] match attr vals, but `help2man | pandoc` outputs none
 my $url_scm_rx = qr{[a-z][a-z0-9]+:};
-my $url_ch_rx  = qr{[\w/%.?=&+-]};
+my $url_ch_rx  = qr{[\w/%.?=&*+-]};
+
+html_tag_dl_to_table;
+
+s{ =\[? <em> ( https?) </em> (:// $url_ch_rx* \]?) }{=<em>$1$2</em>}gx;  # extend <em>
+s{ ( <h\d> $_P_TxtTools::notag_rx ) $beg_rx (-$url_ch_rx+) }{$1<code>$2</code>}gx;  # flags within headings
 for my $rx(
-  qr{`(.+?)`}ax,
-  qr{( $beg_rx $url_scm_rx $url_ch_rx+ )}x,
-  qr{( $beg_rx $url_ch_rx*(/$url_ch_rx | $url_ch_rx/)$url_ch_rx* )}x,
-  qr{( $beg_rx (-[\[\]{}|\w?*=-]+) )}x,
+  qr{`(?<m> .+?)`}x,  # backquoted
+  qr{(?<m> <strong>-.*?</strong> (?: \[?= <em>.*?</em> \]? )? )}x,  # help2man-generated
+  qr{(?<m> $beg_rx $url_scm_rx $url_ch_rx+ )}x,  # URL's
+  qr{(?<m> $beg_rx $url_ch_rx*(/$url_ch_rx | $url_ch_rx/)$url_ch_rx* )}x,  # paths
 ) {
-  s{$rx}{<code>$1</code>}g;
-  html_tag_merge( q(code) ); html_tag_unnest( q(code), q(code) );
+  s{$rx}{<code>$+{m}</code>}g;
 }
+
+html_tag_unnest( q(code), q(code) );
+html_tag_merge( q(code) );
 print;

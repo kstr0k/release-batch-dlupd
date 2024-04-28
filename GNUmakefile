@@ -20,9 +20,10 @@ export VERSION
 
 README := README.md
 doc: $(README)
-GEN_README_USAGE := ./$(APP) --help | mk/esc_html
-$(README): $(APP)
-	@$(GEN_README_USAGE) | mk/update-file-part --fixed-strings $(README) 2 '<a id="app_help"></a>' '<a id="app_help_end"></a>'
+#GEN_README_USAGE := ./$(APP) --help | mk/esc_html
+GEN_README_USAGE := pandoc man/man1/$(APP).1 --wrap=none --shift-heading-level-by=2 -t html5 | sed -ne '1,/SYNOPSIS/!p' | mk/help2man-pandoc-html-clean
+$(README): man/man1/$(APP).1
+	$(GEN_README_USAGE) | mk/update-file-part --fixed-strings $(README) 2 '<a id="app_help"></a>' '<a id="app_help_end"></a>'
 
 install:
 	@printf %s\\n "Install prefix=$(prefix) DESTDIR=$(DESTDIR)"

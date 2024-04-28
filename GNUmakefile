@@ -36,3 +36,8 @@ home-install: install
 
 release: all
 	mk/gh-release-me $(APP) man/man1/$(APP).1
+
+install-build-dep:
+	@mk/apt-install-missing help2man '' pandoc '' shellcheck ''
+.PHONY: install-build-dep
+all: install-build-dep
